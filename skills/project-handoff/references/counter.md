@@ -10,10 +10,10 @@
 | --- | --- | --- |
 | `PostCompact(auto)` | `session_compact`（`reason` 为 `threshold` 或 `overflow`） | 自动压缩数加一。手动 `/compact`、恢复会话、聊天轮数都不计数；同一回合可以发生多次自动压缩 |
 | `SessionStart`／`UserPromptSubmit` 注入 | `before_agent_start` | 仅到期待评估或存在未展示建议时注入状态与待办，不在普通提示中持续唤起交接技能 |
-| （无对应 Hook，新增） | `before_agent_start` 中的规模软检查点 | 上下文 token 超过 max(50k, 窗口 50%)（1M 窗口约 500k）且距上次标记再涨约 50% 时标记待评估。这是 1M 上下文等“压缩几乎不触发”场景的程序化兜底信号，阈值可用 `PI_HANDOFF_SIZE_THRESHOLD` 覆盖 |
+| （无对应 Hook，新增） | `before_agent_start` 中的规模软检查点 | 上下文 token 超过 max(50k, 窗口 80%)（≤256k 小窗口）或 max(50k, 窗口 50%)（更大窗口；1M 约 500k），且距上次标记再涨约 50% 时标记待评估。阈值可用 `PI_HANDOFF_SIZE_THRESHOLD` 按绝对 token 数覆盖 |
 | `Stop` 核验与补漏 | `agent_before_settle` | 核验最终答复正文第一段；缺评估登记或缺展示时请求补漏一次，每回合最多一次 |
 
-- 压缩数或规模到达检查点、且没有用户静默或指定节点时，注入文本标记“已到检查点”，需要一次评估。评估后用登记动作记录结果，使同一检查点不在每轮重查。
+- 压缩数或规模到达检查点、且没有用户静默或指定节点时，注入文本标记“已到检查点”，需要一次评估。登记暂缓或不适用后，压缩兜底冷却至少 3 次自动压缩，使同一检查点不在每轮重查。
 - **阶段边界（完成可验收阶段、进入下一大段工作、已核实的混淆）是一等信号**，与压缩次数无关，随时可评估登记 `stage`／`confusion`，不受冷却约束。扩展只提供节奏信号，不识别业务阶段。
 - 扩展只管理计数、冷却和展示核验；“是否值得建议交接”的判断始终以 SKILL.md 的评估规则为准。
 
@@ -24,7 +24,7 @@
 | 场景 | 参数 |
 | --- | --- |
 | 查状态 | `action: "status"` |
-| 暂缓 | `action: "evaluate"`, `outcome: "defer"`, `note: "<具体缺项>"`, `next_check: "next_turn"`；同阶段没有新收益时改 `"next_compaction"` |
+| 暂缓 | `action: "evaluate"`, `outcome: "defer"`, `note: "<具体缺项>"`, `next_check: "next_compaction"`；仅下一轮明确会补充新事实时用 `"next_turn"`（省略时默认下一个压缩检查点；评估后至少间隔 3 次自动压缩） |
 | 不适用 | `action: "evaluate"`, `outcome: "skip"`, `note: "<纯问答、无后续或讨论本 Skill>"` |
 | 首次次数提醒 | `action: "prepare"`, `reason: "count"`, `safe: true`, `has_next: true`, `notice: "交接建议：<原因、第一步、确认后的动作>"` |
 | 用户主动检查 | `action: "prepare"`, `reason: "manual"`；只在用户执行 `/handoff 检查` 且评估确有切换收益时使用，不受自动提醒静默和冷却限制 |

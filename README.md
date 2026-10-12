@@ -49,9 +49,9 @@ pi install git:github.com/zz1151258647/pi-project-handoff
 | 阶段边界 | 完成一个可验收阶段 / 进入下一大段工作 | 否（同阶段改版本、调参不算新阶段） |
 | 已纠正的混淆 | 目标或版本混淆被核实时 | 否（同一问题只提醒一次） |
 | 压缩兜底 | 第 3 次自动压缩起（手动 `/compact` 不计） | 是（间隔 3 次压缩） |
-| 规模兜底 | 上下文超过 max(50k, 窗口 50%)，再涨约 50% 再提示 | 否（1M 窗口约 500k 起） |
+| 规模兜底 | ≤256k 窗口超过 max(50k, 窗口 80%)；更大窗口超过 max(50k, 窗口 50%)；再涨约 50% 再提示 | 否（128k 约 102k；1M 约 500k 起） |
 
-阈值可用环境变量 `PI_HANDOFF_SIZE_THRESHOLD` 覆盖（绝对 token 数）。提醒只是建议——用户不点头不会写文件、不会换会话。
+阈值可用环境变量 `PI_HANDOFF_SIZE_THRESHOLD` 覆盖（绝对 token 数）。暂缓评估默认等下一个压缩检查点（至少间隔 3 次自动压缩）；仅预计下一轮有新信息时才指定下一轮重评。提醒只是建议——用户不点头不会写文件、不会换会话。
 
 ## 目录结构
 
@@ -68,7 +68,7 @@ pi install git:github.com/zz1151258647/pi-project-handoff
 │       └── assets/
 │           └── PROJECT_STATE.template.md
 └── tests/
-    └── simulate.test.js         # 提醒链模拟测试（33 项断言）
+    └── simulate.test.js         # 提醒链模拟测试
 ```
 
 ## 测试

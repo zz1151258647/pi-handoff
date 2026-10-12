@@ -195,12 +195,13 @@ function statusLine(state: HandoffState): string {
 	return parts.join("；");
 }
 
-/** 规模软检查点阈值：max(50k, 窗口的 50%)，可用 PI_HANDOFF_SIZE_THRESHOLD 覆盖。
- *  1M 窗口约 500k 才提示（长会话常态规模），避免过早打扰。 */
+/** 小窗口在 80% 才做规模评估，大窗口维持 50%；绝对 token 覆盖优先。
+ *  这按实际窗口而非模型名称区分，避免 128k 窗口在 64k 就反复唤起评估。 */
 function sizeThreshold(contextWindow: number): number {
 	const env = Number(process.env.PI_HANDOFF_SIZE_THRESHOLD);
 	if (Number.isFinite(env) && env > 0) return env;
-	return Math.max(50_000, Math.floor(contextWindow * 0.5));
+	const ratio = contextWindow <= 256_000 ? 0.8 : 0.5;
+	return Math.max(50_000, Math.floor(contextWindow * ratio));
 }
 
 function injectedStatusText(state: HandoffState): string {
@@ -477,8 +478,12 @@ export default function (pi: ExtensionAPI) {
 					const note = (params.note ?? "").slice(0, 160);
 					s.pendingEval = false;
 					s.pendingEvalReason = null;
+					// 即便没有形成正式建议，已评估的兜底检查点也要冷却，
+					// 否则第 3 次后每次自动压缩都会再次标记待评估。
+					s.cooldownUntil = Math.max(s.cooldownUntil, s.autoCompactions + 3);
 					s.deferReason = params.outcome === "defer" ? note || "暂缓" : null;
-					s.nextCheck = params.outcome === "defer" ? params.next_check ?? "next_turn" : "next_compaction";
+					// 没有明确下一轮会补齐的事实时，避免每轮重复评估同一阻塞。
+					s.nextCheck = params.outcome === "defer" ? params.next_check ?? "next_compaction" : "next_compaction";
 					saveState(s);
 					return ok(`已登记评估：${params.outcome}${note ? `（${note}）` : ""}；下次检查：${s.nextCheck}`, {
 						action: "evaluate",

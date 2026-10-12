@@ -19,11 +19,16 @@ function findPiNodeModules() {
 			if (fs.existsSync(path.join(nm, "jiti"))) return nm;
 		}
 	} catch {
-		// 找不到时直接报错
+		// 没有 pi install releases 时继续寻找全局 npm 安装
 	}
+	const globalPiModules = path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "npm", "node_modules", "@earendil-works", "pi-coding-agent", "node_modules");
+	if (fs.existsSync(path.join(globalPiModules, "jiti"))) return globalPiModules;
 	throw new Error("找不到 pi 的 node_modules；请设置 PI_NODE_MODULES 环境变量");
 }
 const NM = findPiNodeModules();
+const piEntry = fs.existsSync(path.join(NM, "@earendil-works", "pi-coding-agent", "dist", "index.js"))
+	? path.join(NM, "@earendil-works", "pi-coding-agent", "dist", "index.js")
+	: path.join(NM, "..", "dist", "index.js");
 
 const extPath = process.argv[2] || path.join(__dirname, "..", "extensions", "project-handoff.ts");
 // 隔离测试状态目录，不影响真实状态
@@ -44,7 +49,7 @@ function assert(cond, label) {
 		moduleCache: false,
 		alias: {
 			typebox: NM + "/typebox/build/index.mjs",
-			"@earendil-works/pi-coding-agent": NM + "/@earendil-works/pi-coding-agent/dist/index.js",
+			"@earendil-works/pi-coding-agent": piEntry,
 		},
 	});
 	const factory = await jiti.import(extPath, { default: true });
@@ -61,8 +66,9 @@ function assert(cond, label) {
 	});
 
 	let fakeUsage = undefined;
+	let sessionId = "test-session-1";
 	const fakeCtx = {
-		sessionManager: { getSessionId: () => "test-session-1" },
+		sessionManager: { getSessionId: () => sessionId },
 		ui: { notify: () => {} },
 		getContextUsage: () => fakeUsage,
 	};
@@ -99,6 +105,10 @@ function assert(cond, label) {
 	r = handlers["before_agent_start"]({}, fakeCtx);
 	assert(r.message.content.includes("已到压缩检查点"), "next_turn 下一回合重新提示");
 	r = handlers["before_agent_start"]({}, fakeCtx);
+	assert(r.message.content.includes("已到压缩检查点"), "显式 next_turn 仍可下一轮检查");
+	// 已评估的兜底检查点冷却三次压缩后，才允许下一次 count 建议。
+	await tool.execute("t1b", { action: "evaluate", outcome: "skip", note: "当前无切换收益" }, undefined, undefined, fakeCtx);
+	for (let i = 0; i < 3; i++) handlers["session_compact"]({ reason: "threshold" }, fakeCtx);
 
 	console.log("3) 提出建议");
 	res = await tool.execute("t2", { action: "prepare", reason: "count", notice: "交接建议：" + "甲".repeat(30), safe: true, has_next: true }, undefined, undefined, fakeCtx);
@@ -116,8 +126,8 @@ function assert(cond, label) {
 	assert(s === undefined || s.continue !== true, "展示后无需补漏");
 	res = await tool.execute("t3", { action: "status" }, undefined, undefined, fakeCtx);
 	assert(res.details.state.proposal && res.details.state.proposal.verified === true, "建议已核验（保留为历史）");
-	assert(res.details.state.lastReminderCount === 3, "正式提醒计数为第 3 次");
-	assert(res.details.state.cooldownUntil === 6, "冷却至第 6 次");
+	assert(res.details.state.lastReminderCount === 6, "正式提醒计数为第 6 次");
+	assert(res.details.state.cooldownUntil === 9, "冷却至第 9 次");
 
 	console.log("5) 兜底信号校验");
 	res = await tool.execute("t4", { action: "prepare", reason: "count", notice: "交接建议：" + "乙".repeat(30), safe: true, has_next: true }, undefined, undefined, fakeCtx);
@@ -130,7 +140,7 @@ function assert(cond, label) {
 	res = await tool.execute("t5", { action: "prepare", reason: "confusion", cause_key: "ver-confusion", notice: "交接建议：" + "丙".repeat(30), safe: true, has_next: true }, undefined, undefined, fakeCtx);
 	assert(res.details.prepared === true, "confusion 不受冷却约束");
 	res = await tool.execute("t6", { action: "respond", proposal_id: res.details.proposal_id, response: "continue" }, undefined, undefined, fakeCtx);
-	assert(res.details.state.proposal === null && res.details.state.cooldownUntil === 6, "回应 continue 归档建议并保持冷却");
+	assert(res.details.state.proposal === null && res.details.state.cooldownUntil === 9, "回应 continue 归档建议并保持冷却");
 	await tool.execute("t7", { action: "mute" }, undefined, undefined, fakeCtx);
 	res = await tool.execute("t8", { action: "prepare", reason: "count", notice: "交接建议：" + "丁".repeat(30), safe: true, has_next: true }, undefined, undefined, fakeCtx);
 	assert(res.isError === true, "静默中拒绝自动提醒");
@@ -160,6 +170,42 @@ function assert(cond, label) {
 	fakeUsage = { tokens: 800000, contextWindow: 1000000, percent: 80 };
 	r = handlers["before_agent_start"]({}, fakeCtx);
 	assert(r.message.content.includes("上下文规模已到检查点"), "再涨 50% 后再次触发");
+
+	console.log("9) 小窗口阈值及环境覆盖");
+	sessionId = "test-session-small";
+	handlers["session_start"]({ type: "session_start" }, fakeCtx);
+	fakeUsage = { tokens: 64000, contextWindow: 128000, percent: 50 };
+	r = handlers["before_agent_start"]({}, fakeCtx);
+	assert(r === undefined, "128k 窗口到 50% 不触发规模检查点");
+	fakeUsage = { tokens: 103000, contextWindow: 128000, percent: 80.5 };
+	r = handlers["before_agent_start"]({}, fakeCtx);
+	assert(r.message.content.includes("上下文规模已到检查点"), "128k 窗口约 80% 触发检查点");
+	sessionId = "test-session-override";
+	handlers["session_start"]({ type: "session_start" }, fakeCtx);
+	process.env.PI_HANDOFF_SIZE_THRESHOLD = "90000";
+	fakeUsage = { tokens: 89000, contextWindow: 128000, percent: 69.5 };
+	r = handlers["before_agent_start"]({}, fakeCtx);
+	assert(r === undefined, "环境变量覆盖下，未到 90k 不触发");
+	fakeUsage = { tokens: 91000, contextWindow: 128000, percent: 71.1 };
+	r = handlers["before_agent_start"]({}, fakeCtx);
+	assert(r.message.content.includes("上下文规模已到检查点"), "环境变量绝对阈值覆盖生效");
+	delete process.env.PI_HANDOFF_SIZE_THRESHOLD;
+
+	console.log("10) 无新信息时的压缩冷却");
+	sessionId = "test-session-defer";
+	handlers["session_start"]({ type: "session_start" }, fakeCtx);
+	fakeUsage = undefined;
+	for (let i = 0; i < 3; i++) handlers["session_compact"]({ reason: "threshold" }, fakeCtx);
+	res = await tool.execute("t14", { action: "evaluate", outcome: "defer", note: "缺少后续步骤" }, undefined, undefined, fakeCtx);
+	assert(res.details.state.nextCheck === "next_compaction" && res.details.state.cooldownUntil === 6, "默认暂缓等下一压缩检查点并冷却三次");
+	r = handlers["before_agent_start"]({}, fakeCtx);
+	assert(r === undefined, "无新事实的下一轮不重复触发评估");
+	handlers["session_compact"]({ reason: "threshold" }, fakeCtx);
+	r = handlers["before_agent_start"]({}, fakeCtx);
+	assert(r === undefined, "第 4 次压缩不重复评估同一暂缓事项");
+	for (let i = 0; i < 2; i++) handlers["session_compact"]({ reason: "threshold" }, fakeCtx);
+	r = handlers["before_agent_start"]({}, fakeCtx);
+	assert(r.message.content.includes("已到压缩检查点"), "第 6 次压缩再次检查");
 
 	console.log(process.exitCode ? "\n有断言失败" : "\n全部通过");
 })();
