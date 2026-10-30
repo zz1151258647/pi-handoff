@@ -1,75 +1,55 @@
-# pi-project-handoff
+# pi-handoff
 
-项目交接 skill + 交接提醒计数扩展，用于 **pi coding agent**。解决长任务换会话时丢失定稿位置、已否决方案、真实进度和下一步的问题：把影响接续的信息整理成 `PROJECT_STATE.md`，让接手会话先核对再继续，不用重述，也不会两个会话同时改。
+当前版本：**v2.0.0**（原名 pi-project-handoff）。本版从自动交接提醒改为纯手动命令，与 1.x 的提醒机制不兼容；升级后请执行 `/reload` 或重启 Pi。
 
-移植自 [duoduoler-ops/Table-skills](https://github.com/duoduoler-ops/Table-skills) 的 `project-handoff`（原面向 Codex / Claude Code 的 Hook 方案），改为 pi 原生的扩展事件实现。
-
-## 功能
-
-- **保存交接材料**：目标、有效决定、关键文件、真实进度、下一步和验收方法，增量更新，不复制整段聊天。
-- **接续开场白**：pi 无自动新建会话能力，保存后交付可复制的开场白，新会话粘贴即恢复（先只读核对再动手）。
-- **交接提醒（三个独立动作，互不授权）**：
-  - 阶段边界是一等信号：完成可验收阶段、进入下一大段工作、已核实的混淆，随时评估，不等冷却；
-  - 兜底节奏：第 3 次自动压缩后、或上下文规模到检查点（1M 窗口约 500k，可调）时评估一次；
-  - 建议以「交接建议：」放在最终答复第一段，扩展核验展示后才计一次正式提醒。
-
-## 安装
-
-一键安装（skill 与扩展一起装好）：
-
-```bash
-pi install git:github.com/zz1151258647/pi-project-handoff
-```
-
-手动安装：
-
-1. `skills/project-handoff/` 拷到 `<agent-dir>/skills/`（默认 `~/.pi/agent/skills/`）
-2. `extensions/project-handoff.ts` 拷到 `<agent-dir>/extensions/`（自动发现）
-3. `/reload` 或重启 pi
-
-验证：`/handoff` 能触发交接操作即扩展已加载；skill 会出现在启动时的可用 skill 列表。
+用于 **Pi coding agent** 的纯手动任务交接插件。只在执行 `/handoff` 时整理保存，执行 `/handoff 接续` 时自动读取。材料在插件专属缓存，不写业务项目，不必添加 `.gitignore`。
 
 ## 使用
 
-| 入口 | 效果 |
-|---|---|
-| `/handoff 交接` | 保存交接材料并交付接续开场白 |
-| `/handoff 接续` | 从当前项目交接材料恢复上次任务，先核对再继续已授权事项 |
-| `/handoff 检查` | 主动评估是否值得交接，只评估和登记，不保存材料 |
-| "保存一下进度" / "整理交接材料" | 同 `/handoff` |
-| `/skill:project-handoff <指令>` | 显式加载 skill 并带指令 |
-| "读 PROJECT_STATE.md 继续上次" | 新会话恢复（也可粘贴开场白） |
+| 命令 | 效果 |
+| --- | --- |
+| `/handoff` | 整理目标、决定、真实进度、证据和下一步，保存到缓存 |
+| `/handoff 保存 <补充要求>` | 带要求整理保存；`交接` 为别名 |
+| `/handoff 接续` | 读取单份存档，核对成功后清理，再继续已授权事项；`恢复` 为别名 |
+| `/handoff 状态` | 显示压缩次数与实际存档路径，不调用模型 |
+| `/handoff 检查` | 兼容旧命令，仅显示状态，不再评估交接 |
 
-接续流程：在新会话的项目目录执行 `/handoff 接续`；技能会定位当前项目既定的交接状态材料，先只读核对，再继续其中已授权的下一步。若材料不在默认位置，补充指定文件路径即可。
+接续只需：开启新 Pi 会话，输入 `/handoff 接续`。不需要填写路径或粘贴长提示词。插件不自动新建或切换会话；普通启动也不会加载存档。
 
-## 触发提醒的信号
+### 压缩完成提示
 
-| 信号 | 时机 | 是否受冷却约束 |
-|---|---|---|
-| 阶段边界 | 完成一个可验收阶段 / 进入下一大段工作 | 否（同阶段改版本、调参不算新阶段） |
-| 已纠正的混淆 | 目标或版本混淆被核实时 | 否（同一问题只提醒一次） |
-| 压缩兜底 | 第 3 次自动压缩起（手动 `/compact` 不计） | 是（间隔 3 次压缩） |
-| 规模兜底 | ≤256k 窗口超过 max(50k, 窗口 80%)；更大窗口超过 max(50k, 窗口 50%)；再涨约 50% 再提示 | 否（128k 约 102k；1M 约 500k 起） |
+每次成功压缩后，消息流中显示一行灰色（主题 dim 色）提示：
 
-阈值可用环境变量 `PI_HANDOFF_SIZE_THRESHOLD` 覆盖（绝对 token 数）。暂缓评估默认等下一个压缩检查点（至少间隔 3 次自动压缩）；仅预计下一轮有新信息时才指定下一轮重评。提醒只是建议——用户不点头不会写文件、不会换会话。
+> 当前会话已压缩 3 次
 
-## 目录结构
+纯计数，不唤起模型、不注入提示词、不评估交接、不主动提醒。手动和自动成功压缩均计入；失败和取消不计。计数来自活动分支的真实压缩历史，重启或 `/reload` 不清零，派生会话包含继承的历史。终端字号保持正常，仅弱化颜色。
 
+### 缓存位置
+
+```text
+~/.pi/agent/cache/project-handoff/handoff.md
 ```
-├── package.json                 # pi 包声明
-├── extensions/
-│   └── project-handoff.ts       # 计数扩展：压缩/规模检查点、状态注入、展示核验、补漏
-├── skills/
-│   └── project-handoff/
-│       ├── SKILL.md             # 入口、评估规则、展示规则
-│       ├── references/
-│       │   ├── handoff.md       # 保存 / 接续 / 恢复流程
-│       │   └── counter.md       # 登记动作、核验方式、部署与回退
-│       └── assets/
-│           └── PROJECT_STATE.template.md
-└── tests/
-    └── simulate.test.js         # 提醒链模拟测试
+
+- 设置 `PI_CODING_AGENT_DIR` 时，使用该目录下的 `cache/project-handoff/`。
+- 全部项目和会话共用这一份临时交接材料，不做项目区分；每次手动保存覆盖旧内容，不混入旧任务。接续核对成功后清理；读取失败、核对阻塞或取消时保留，其他会话更新的新存档不会被误删。
+- 实际任务目录保存在材料中，接续时先核对，避免在新会话的其他目录误改。更换机器需要自行迁移。
+- 缓存放在插件专属的用户数据目录，而非插件源码仓库，避免更新、重装和切换版本覆盖存档。
+- 写入由仅对本次命令授权的 `handoff_save` 工具完成，采用临时文件替换、并发锁及回读核验；不改业务项目文件。
+- 下次 `/handoff 交接` 从当前会话从零生成，不增量修改或合并旧档。不是历史档案库；如需保留交接材料，请在接续前自行备份。
+
+旧版的阶段提醒、压缩/规模检查点、冷却、`handoff_state` 及自动补漏已移除；`PI_HANDOFF_SIZE_THRESHOLD` 不再使用。自然语言提到交接不会自动保存；请使用命令。原有 `PROJECT_STATE.md` 与旧计数 JSON 不自动迁移或删除。如需导入旧材料，可执行 `/handoff 保存 请读取并导入 <旧文件路径>`。
+
+## 安装
+
+```bash
+pi install git:github.com/zz1151258647/pi-handoff
 ```
+
+从旧名称升级：将安装来源改为 `git:github.com/zz1151258647/pi-handoff`，避免新旧来源同时安装。缓存位置保持不变。
+
+安装或修改后执行 `/reload` 或重启 Pi。`/handoff 状态` 可确认命令已加载。
+
+手动安装需复制 `extensions/handoff.ts` 到 `<agent-dir>/extensions/`，并复制 `skills/handoff/` 到 `<agent-dir>/skills/`；必须同时安装扩展与 Skill。
 
 ## 测试
 
@@ -77,24 +57,16 @@ pi install git:github.com/zz1151258647/pi-project-handoff
 node tests/simulate.test.js
 ```
 
-不联网、不调模型。默认在 `<agent-dir>/install/releases/*/node_modules` 里找 pi 运行时，也可用 `PI_NODE_MODULES` 环境变量指定。
-
-## 验证证据层级
-
-报告问题时请分开说明：文件存在、扩展加载、`/handoff` 可用、真实会话计数变化、最终答复核验通过——这五层是不同的证据。扩展未加载或事件未触发时程序不保证提醒发生。
+在独立临时目录模拟命令、压缩、存档、恢复与渲染，不联网、不调模型。自动寻找 Pi 安装依赖，也可用 `PI_NODE_MODULES` 指定。模拟通过不等于真实 TUI 已验收：重载后执行一次 `/compact` 检查灰色提示，再测试保存与新会话接续。
 
 ## 卸载
 
 ```bash
-pi remove git:github.com/zz1151258647/pi-project-handoff
+pi remove git:github.com/zz1151258647/pi-handoff
 ```
 
-手动安装则删除拷贝的两个文件即可。状态目录 `<agent-dir>/state/project-handoff/` 保留（可手动删）。
+缓存保留，可自行备份或删除 `<agent-dir>/cache/project-handoff/`。旧版 `<agent-dir>/state/project-handoff/` 也不会自动清理。
 
-## 致谢
+## 致谢与许可
 
-skill 的交接材料规范、评估三条件（安全位置 / 明确后续 / 切换收益）和「提醒、保存、接续三动作分离」的设计来自 [duoduoler-ops/Table-skills · project-handoff](https://github.com/duoduoler-ops/Table-skills)，版权归其作者所有（MIT）。
-
-## License
-
-MIT，见 [LICENSE](LICENSE)。
+交接材料规范移植自 [duoduoler-ops/Table-skills](https://github.com/duoduoler-ops/Table-skills) 的 project-handoff，现已改为 Pi 原生手动命令与缓存流程。MIT，见 [LICENSE](LICENSE)。
