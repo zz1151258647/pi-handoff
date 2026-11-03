@@ -25,7 +25,7 @@
 
 | ID | 状态 | 批准后行动 / 交付记录 |
 |---|---|---|
-| 01 | in_progress | 构建/隔离安装/源码与产物回归及独立验收通过，发布与切换待执行。用户已授权完整实施与远端写入；[当前规格](features/01-runtime-artifact/spec.md)、[推进与验收](features/01-runtime-artifact/record.md)。研发使用隔离 worktree，主会话负责接收补丁、发布与本机配置切换 |
+| 01 | verified | 用户授权的构建、回归、独立复核、v2.0.1 tag/Release、正式下载校验与本机固定来源切换均完成。源码/tag 2d16a62；[当前规格](features/01-runtime-artifact/spec.md)、[完整证据及回退](features/01-runtime-artifact/record.md)。当前终端重载仍由用户执行，不冒称已现场验证 |
 
 ## D 区 — 暂缓 / 排除
 

@@ -1,6 +1,6 @@
 # v2.0.1 已验证交付
 
-> 发布状态：待发布。以下为本地实现与自动化验收事实；远端发布和安装切换结果见当前分支的 [STATUS](STATUS.md) 与 [记录](features/01-runtime-artifact/record.md)。
+> 发布状态：已于 2026-11-03 发布 [v2.0.1](https://github.com/zz1151258647/pi-handoff/releases/tag/v2.0.1)。源码/tag 为 2d16a62；正式下载校验及本机固定来源切换完成。详见 [STATUS](STATUS.md) 与 [记录](features/01-runtime-artifact/record.md)。
 
 - **01 运行包分发**：新增离线 JS 构建、9 文件严格白名单归档与 SHA256，运行 manifest 只引用 JS 与完整 Skill，宿主 SDK/typebox 不打包。
 - **01 安全安装**：支持复制到空版本目录，拒绝非空、重叠及符号链接目标；不自动修改设置或交接缓存。
