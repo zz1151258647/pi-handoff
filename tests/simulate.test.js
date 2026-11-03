@@ -41,7 +41,7 @@ const { createJiti } = require(path.join(NM, "jiti"));
 		});
 		const factory = await jiti.import(extPath, { default: true });
 		const handlers = {}, commands = {}, tools = {}, renderers = {};
-		const userMessages = [], entries = [], notifications = [];
+		const userMessages = [], entries = [], notifications = [], markdownTransformers = [];
 		let branch = [], sessionId = "session-one", idle = true, dispatchFails = false;
 		const project = path.join(temporary, "project-one");
 		const secondProject = path.join(temporary, "project-two");
@@ -58,6 +58,7 @@ const { createJiti } = require(path.join(NM, "jiti"));
 			registerTool: (tool) => { tools[tool.name] = tool; },
 			registerCommand: (name, command) => { commands[name] = command; },
 			registerEntryRenderer: (name, renderer) => { renderers[name] = renderer; },
+			registerMarkdownTransformer: (transformer) => { markdownTransformers.push(transformer); },
 			appendEntry: (customType, data) => { const entry = { type: "custom", customType, data }; entries.push(entry); branch.push(entry); },
 			sendUserMessage: (text, options) => {
 				userMessages.push({ text, options });
@@ -236,6 +237,7 @@ const { createJiti } = require(path.join(NM, "jiti"));
 			registerTool: (tool) => { peerTools[tool.name] = tool; },
 			registerCommand: (name, handler) => { peerCommands[name] = handler; },
 			registerEntryRenderer: () => {},
+			registerMarkdownTransformer: () => {},
 			sendUserMessage: (prompt) => peerHandlers.before_agent_start({ messageType: "user", prompt }, peerCtx),
 		});
 		const peerSave = async (content) => {
@@ -309,6 +311,196 @@ const { createJiti } = require(path.join(NM, "jiti"));
 		assert.equal(actualCount.type, "custom");
 		assert.equal(actualCount.data.count, 1);
 		assert.equal(JSON.stringify(manager.buildSessionContext()).includes("project_handoff_compaction_count"), false);
+
+		console.log("12. 两项子命令补全：仅交接/接续、中文前缀、自由补充要求与真实补全提供器");
+		const completions = extension.commands.get("handoff").getArgumentCompletions;
+		const names = ["交接", "接续"];
+		assert.deepEqual(completions("").map(item => item.value), names);
+		for (const name of names) {
+			assert.deepEqual(completions(name[0]).map(item => item.value), [name]);
+			assert.ok(completions(name)[0].description);
+		}
+		assert.equal(completions("不存在"), null);
+		for (const legacy of ["保存", "恢复", "状态", "检查"]) {
+			assert.equal(completions(legacy), null, "旧名称仍兼容执行，但不占菜单项");
+		}
+		for (const input of ["接续 ", "保存 保留未验证事项", "接续 先跑测试", "自定义 补充要求"]) {
+			assert.equal(completions(input), null, "不要覆盖用户补充要求");
+		}
+		const tui = await import(pathToFileURL(path.join(NM, "@earendil-works", "pi-tui", "dist", "index.js")).href);
+		const themeModule = await import(pathToFileURL(path.join(path.dirname(piEntry), "modes", "interactive", "theme", "theme.js")).href);
+		themeModule.initTheme("dark", false);
+		const provider = new tui.CombinedAutocompleteProvider([{ name: "handoff", getArgumentCompletions: completions }], project);
+		const signal = new AbortController().signal;
+		let suggestions = await provider.getSuggestions(["/handoff "], 0, 9, { signal });
+		assert.deepEqual(suggestions.items.map(item => item.value), names);
+		assert.equal(provider.applyCompletion(["/handoff "], 0, 9, suggestions.items[1], suggestions.prefix).lines[0], "/handoff 接续");
+		suggestions = await provider.getSuggestions(["/handoff 接"], 0, 10, { signal });
+		assert.deepEqual(suggestions.items.map(item => item.value), ["接续"]);
+		assert.equal(provider.applyCompletion(["/handoff 接"], 0, 10, suggestions.items[0], suggestions.prefix).lines[0], "/handoff 接续");
+		const extraInput = "/handoff 接续 先跑测试";
+		assert.equal(await provider.getSuggestions([extraInput], 0, extraInput.length, { signal }), null);
+		const editor = new tui.Editor({ requestRender() {} }, themeModule.getEditorTheme());
+		editor.setAutocompleteProvider(provider);
+		for (const char of "/handoff ") {
+			editor.handleInput(char);
+			await new Promise(setImmediate); // 等待真实编辑器的异步补全派发。
+		}
+		assert.equal(editor.capturesViewportInput, true, "输入空格后应出现子命令菜单");
+		editor.handleInput("\x1b[B"); // 下：交接 -> 接续
+		editor.handleInput("\x1b[A"); // 上：接续 -> 交接
+		editor.handleInput("\x1b[B"); // 下：交接 -> 接续
+		editor.handleInput("\t");
+		assert.equal(editor.getText(), "/handoff 接续", "上下键选择，Tab 填入而不发送");
+
+		console.log("13. 长接续仅缩短界面显示，模型仍收到完整原文和授权；普通消息不受影响");
+		assert.equal(typeof extension.markdownTransformer, "function");
+		assert.equal(markdownTransformers.length, 1);
+		const transform = extension.markdownTransformer;
+		fs.rmdirSync(archive); // 上面的权限错误用目录代替存档；恢复为长测试材料。
+		const longArchive = "# 长交接材料\n" + "关键背景、证据与未授权边界\n".repeat(500);
+		fs.writeFileSync(archive, longArchive);
+		command("接续 先核对不要发布");
+		const longPrompt = userMessages.at(-1).text;
+		const visibleBody = longPrompt.replace(/^\/skill:handoff /, "");
+		const brief = "/handoff 接续（已加载交接材料，正文不展开；待核对接手）";
+		assert.equal(transform(longPrompt, { messageType: "user" }), brief);
+		assert.equal(transform(visibleBody, { messageType: "user" }), brief, "Skill 展开后的参数正文也应缩短");
+		assert.ok(longPrompt.includes(JSON.stringify(longArchive)));
+		assert.match(longPrompt, /先核对不要发布/);
+		assert.equal(transform(longPrompt, { messageType: "assistant" }), longPrompt);
+		assert.equal(transform(longPrompt, { messageType: "assistant-thinking" }), longPrompt);
+		for (const text of [
+			"请修复 /handoff 接续",
+			"接续。工作目录：普通用户说明",
+			"交接授权标识：not-a-request",
+			"保存当前进度。工作目录：这是故障报告示例\n交接授权标识：12345678-1234-4234-8234-123456789abc",
+			"接续。工作目录：这是故障报告示例\n交接授权标识：12345678-1234-4234-8234-123456789abc\n\n交接材料（JSON 字符串）：\n\"示例\"",
+			visibleBody.replace(/交接授权标识：[0-9a-f-]{36}/, "交接授权标识：" + "-".repeat(36)),
+			visibleBody.replace(/交接授权标识：[0-9a-f-]{36}/, "无标识"),
+		]) {
+			assert.equal(transform(text, { messageType: "user" }), text, "不要改普通用户消息");
+		}
+		const display = await import(pathToFileURL(path.join(path.dirname(piEntry), "modes", "interactive", "components", "user-message.js")).href);
+		const userComponent = new display.UserMessageComponent(visibleBody, undefined, 1, [transform]);
+		for (const width of [30, 60, 120]) {
+			const lines = userComponent.render(width);
+			assert.ok(lines.length <= 8, `宽度 ${width} 时不应铺满会话：${lines.length} 行`);
+			assert.equal(lines.join("\n").includes("关键背景"), false);
+		}
+		const contextManager = host.SessionManager.inMemory(project);
+		contextManager.appendMessage({ role: "user", content: longPrompt, timestamp: Date.now() });
+		assert.ok(contextManager.buildSessionContext().messages.some(message => message.content === longPrompt));
+		result = await complete(); // 显示缩短不破坏原来的授权激活和清理流程。
+		assert.equal(result.details.cleared, true);
+		command("保存 保留未验证事项");
+		assert.match(transform(userMessages.at(-1).text, { messageType: "user" }), /^\/handoff 交接（/);
+		await save("# 界面修复后仍可保存");
+
+		console.log("14. 完整按键：命令名 Tab 后立即打开两项菜单；选择不提交、Esc 取消、额外 Tab 重开");
+		const { KeybindingsManager } = await import(pathToFileURL(path.join(path.dirname(piEntry), "core", "keybindings.js")).href);
+		const kb = new KeybindingsManager();
+		const fakeTui = { requestRender() {}, terminal: { rows: 30, columns: 100 } };
+		const typeText = async (target, text) => {
+			for (const char of text) {
+				target.handleInput(char);
+				await new Promise(setImmediate);
+			}
+		};
+		const createUI = async (previousFactory, baseProvider = provider) => {
+			let activeProvider = baseProvider, editorFactory = previousFactory, activeEditor;
+			const submitted = [];
+			const ui = {
+				...ctx.ui,
+				addAutocompleteProvider: wrap => { activeProvider = wrap(activeProvider); },
+				getEditorComponent: () => editorFactory,
+				setEditorComponent: next => {
+					editorFactory = next;
+					activeEditor = next(fakeTui, themeModule.getEditorTheme(), kb);
+					activeEditor.setAutocompleteProvider(activeProvider);
+					activeEditor.onSubmit = text => submitted.push(text);
+				},
+			};
+			for (const handler of extension.handlers.get("session_start")) {
+				await handler({ type: "session_start", reason: "startup" }, { ...actualCtx, mode: "tui", ui });
+			}
+			return { editor: activeEditor, provider: activeProvider, submitted };
+		};
+		const beforeKeyboardTests = userMessages.length;
+		for (const prefix of ["/handoff", "/hand"]) {
+			const testUI = await createUI();
+			await typeText(testUI.editor, prefix);
+			testUI.editor.handleInput("\t");
+			await new Promise(setImmediate);
+			assert.equal(testUI.editor.getText(), "/handoff ");
+			assert.equal(testUI.editor.capturesViewportInput, true, `${prefix} Tab 后必须直接弹出子菜单`);
+			const actual = await testUI.provider.getSuggestions(["/handoff "], 0, 9, { signal, force: true });
+			assert.deepEqual(actual.items.map(item => item.value), names);
+			const rendered = testUI.editor.render(100).join("\n");
+			assert.ok(rendered.includes("交接") && rendered.includes("接续"));
+			assert.equal(rendered.includes("状态"), false);
+			testUI.editor.handleInput("\x1b[B");
+			testUI.editor.handleInput("\x1b[A");
+			testUI.editor.handleInput("\x1b[B");
+			testUI.editor.handleInput("\t");
+			assert.equal(testUI.editor.getText(), "/handoff 接续");
+			assert.deepEqual(testUI.submitted, [], "选择参数不可直接执行命令");
+			await typeText(testUI.editor, " 先核对不要发布");
+			assert.equal(testUI.editor.getText(), "/handoff 接续 先核对不要发布");
+			testUI.editor.handleInput("\r");
+			assert.deepEqual(testUI.submitted, ["/handoff 接续 先核对不要发布"]);
+		}
+		const escapeUI = await createUI();
+		await typeText(escapeUI.editor, "/handoff");
+		escapeUI.editor.handleInput("\t");
+		await new Promise(setImmediate);
+		escapeUI.editor.handleInput("\x1b");
+		assert.equal(escapeUI.editor.capturesViewportInput, false);
+		assert.equal(escapeUI.editor.getText(), "/handoff ");
+		escapeUI.editor.handleInput("\t");
+		await new Promise(setImmediate);
+		assert.equal(escapeUI.editor.capturesViewportInput, true, "空格后的显式 Tab 应重开子菜单，而非文件菜单");
+		escapeUI.editor.handleInput("\r");
+		assert.equal(escapeUI.editor.getText(), "/handoff 交接");
+		assert.deepEqual(escapeUI.submitted, [], "Enter 选择参数后不自动发送");
+		escapeUI.editor.handleInput("\r");
+		assert.deepEqual(escapeUI.submitted, ["/handoff 交接"]);
+		assert.equal(userMessages.length, beforeKeyboardTests, "菜单操作不应唤起模型");
+
+		console.log("15. 组合既有编辑器；其他命令、@与路径补全原样委托；非TUI不安装包装");
+		let previousEditor;
+		const previousFactory = (tui, theme, bindings) => {
+			previousEditor = new host.CustomEditor(tui, theme, bindings);
+			return previousEditor;
+		};
+		const combinedUI = await createUI(previousFactory);
+		assert.equal(combinedUI.editor, previousEditor, "不能丢弃其他扩展已有的编辑器实例");
+		await typeText(combinedUI.editor, "/hand");
+		combinedUI.editor.handleInput("\t");
+		await new Promise(setImmediate);
+		assert.equal(combinedUI.editor.capturesViewportInput, true);
+		combinedUI.editor.handleInput("\x1b");
+		const delegated = [];
+		const sentinel = {
+			triggerCharacters: ["$"],
+			getSuggestions: (...args) => { delegated.push(["suggest", args]); return null; },
+			applyCompletion: (...args) => { delegated.push(["apply", args]); return "unchanged"; },
+			shouldTriggerFileCompletion: (...args) => { delegated.push(["file", args]); return false; },
+		};
+		const delegatedUI = await createUI(undefined, sentinel);
+		assert.deepEqual(delegatedUI.provider.triggerCharacters, ["$"]);
+		for (const input of ["/other ", "@file", "./path", "/handoff 接续 附加要求"]) {
+			const options = { signal, force: true };
+			await delegatedUI.provider.getSuggestions([input], 0, input.length, options);
+			assert.equal(delegated.at(-1)[1][3], options, "非 handoff 子菜单不可改 force 或其他选项");
+			assert.equal(delegatedUI.provider.shouldTriggerFileCompletion([input], 0, input.length), false);
+		}
+		const applyArgs = [["@file"], 0, 5, { value: "@file.txt", label: "@file.txt" }, "@file"];
+		assert.equal(delegatedUI.provider.applyCompletion(...applyArgs), "unchanged");
+		assert.deepEqual(delegated.at(-1), ["apply", applyArgs]);
+		for (const handler of extension.handlers.get("session_start")) {
+			await handler({ type: "session_start" }, { ...actualCtx, mode: "rpc", ui: { notify() {} } });
+		}
 		console.log("\n全部通过");
 	} finally {
 		fs.rmSync(temporary, { recursive: true, force: true });

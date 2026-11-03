@@ -4,10 +4,57 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, w
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
-import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
 const COUNTER_ENTRY = "project_handoff_compaction_count";
+
+/** 菜单只展示两个业务动作；旧名称仍由命令处理器兼容。 */
+function handoffCompletions(prefix: string) {
+	if (/\s/.test(prefix)) return null;
+	const items = [
+		{ value: "交接", label: "交接", description: "整理当前进度并保存交接材料" },
+		{ value: "接续", label: "接续", description: "读取交接材料，核对接手后继续" },
+	].filter((item) => item.value.startsWith(prefix));
+	return items.length > 0 ? items : null;
+}
+
+/** 通过公开 UI 接口组合既有编辑器，不修改宿主或使用编辑器私有字段。 */
+function installHandoffAutocomplete(ctx: ExtensionContext) {
+	if (ctx.mode !== "tui") return;
+	const isArgument = (lines: string[], line: number, col: number) =>
+		lines.length === 1 && line === 0 && /^\/handoff [^\s]*$/.test((lines[0] ?? "").slice(0, col));
+
+	// Pi 在空格后按 Tab 默认请求文件补全；这里只将 handoff 参数交回命令补全。
+	ctx.ui.addAutocompleteProvider((current) => ({
+		triggerCharacters: current.triggerCharacters,
+		getSuggestions(lines, line, col, options) {
+			return current.getSuggestions(lines, line, col, isArgument(lines, line, col) ? { ...options, force: false } : options);
+		},
+		applyCompletion(lines, line, col, item, prefix) {
+			return current.applyCompletion(lines, line, col, item, prefix);
+		},
+		shouldTriggerFileCompletion(lines, line, col) {
+			// 这是显式 Tab 请求的入口开关；必须放行，再由上面的 getSuggestions 关闭 force。
+			return isArgument(lines, line, col) || (current.shouldTriggerFileCompletion?.(lines, line, col) ?? true);
+		},
+	}));
+
+	const previous = ctx.ui.getEditorComponent();
+	ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+		const editor = previous?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
+		const handleInput = editor.handleInput.bind(editor);
+		editor.handleInput = (data: string) => {
+			const before = editor.getText();
+			handleInput(data);
+			// 原生接受命令名后会关闭菜单。仅在本次 Tab 确实补成 /handoff 时请求下一层。
+			if (keybindings.matches(data, "tui.input.tab") && /^\/[^\s/]*$/.test(before) && editor.getText() === "/handoff ") {
+				handleInput(data);
+			}
+		};
+		return editor;
+	});
+}
 
 /** 单份临时交接存档，不按项目或会话区分。 */
 function cachePath(): string {
@@ -32,6 +79,20 @@ function compactionCount(ctx: ExtensionContext): number {
 export default function (pi: ExtensionAPI) {
 	let pendingOperation: { path: string; previous: string | null; sessionId: string; requestId: string; active: boolean; kind: "save" | "resume" } | undefined;
 
+	// 仅改变插件生成消息的界面显示；原始指令、完整材料和授权标识仍保留在模型上下文中。
+	// Skill 展开后，Pi 会把参数正文单独交给用户消息渲染器，所以同时兼容展开前后文本。
+	pi.registerMarkdownTransformer((markdown, { messageType }) => {
+		if (messageType !== "user" || !/\n交接授权标识：[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\r?\n|$)/.test(markdown)) return markdown;
+		const text = markdown.replace(/^\/skill:handoff\s+/, "");
+		if (/^接续。工作目录：[^\r\n]+。插件已从 [^\r\n]+ 读取唯一的交接存档（不按项目区分）。/.test(text) && text.includes("\n\n交接材料（JSON 字符串）：\n")) {
+			return "/handoff 接续（已加载交接材料，正文不展开；待核对接手）";
+		}
+		if (/^保存当前进度。工作目录：[^\r\n]+；源会话：[^\r\n]+。只用 handoff_save 保存至插件缓存 /.test(text)) {
+			return "/handoff 交接（已请求整理当前进度，等待保存结果）";
+		}
+		return markdown;
+	});
+
 	pi.registerEntryRenderer<{ count: number }>(COUNTER_ENTRY, (entry, _options, theme) => {
 		return new Text(theme.fg("dim", `当前会话已压缩 ${entry.data?.count ?? 0} 次`), 0, 0);
 	});
@@ -53,7 +114,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// 命令授权只在本次整理回合有效，不随会话恢复或分支切换遗留。
-	pi.on("session_start", () => { pendingOperation = undefined; });
+	pi.on("session_start", (_event, ctx) => {
+		pendingOperation = undefined;
+		installHandoffAutocomplete(ctx);
+	});
 	pi.on("session_shutdown", () => { pendingOperation = undefined; });
 	pi.on("session_tree", () => { pendingOperation = undefined; });
 	pi.on("agent_settled", () => { pendingOperation = undefined; });
@@ -143,7 +207,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("handoff", {
-		description: "手动保存交接；接续：读取单份缓存；状态：查看计数与路径",
+		description: "交接：整理保存当前进度；接续：读取材料并核对接手",
+		getArgumentCompletions: handoffCompletions,
 		handler: (args, ctx) => {
 			const input = args.trim();
 			const match = input.match(/^(交接|保存|接续|恢复|状态|检查)(?:\s+([\s\S]*))?$/);
