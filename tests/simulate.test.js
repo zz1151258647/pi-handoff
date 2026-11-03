@@ -23,7 +23,8 @@ const NM = findPiNodeModules();
 const piEntry = fs.existsSync(path.join(NM, "@earendil-works", "pi-coding-agent", "dist", "index.js"))
 	? path.join(NM, "@earendil-works", "pi-coding-agent", "dist", "index.js")
 	: path.join(NM, "..", "dist", "index.js");
-const extPath = process.argv[2] || path.join(__dirname, "..", "extensions", "handoff.ts");
+const extPath = path.resolve(process.argv[2] || path.join(__dirname, "..", "extensions", "handoff.ts"));
+const skillPath = path.join(path.dirname(extPath), "..", "skills", "handoff", "SKILL.md");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "ph-manual-test-"));
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = path.join(temporary, "agent");
@@ -279,7 +280,7 @@ const { createJiti } = require(path.join(NM, "jiti"));
 		assert.equal(bodyOf(archive), "# 从当前会话重新生成\n");
 
 		console.log("10. Skill 仅手动，文档无旧自动触发，缓存权限错误不降级");
-		const skill = fs.readFileSync(path.join(__dirname, "..", "skills", "handoff", "SKILL.md"), "utf8");
+		const skill = fs.readFileSync(skillPath, "utf8");
 		assert.match(skill, /disable-model-invocation: true/);
 		fs.unlinkSync(expectedPath()); fs.mkdirSync(expectedPath());
 		const beforeError = userMessages.length;

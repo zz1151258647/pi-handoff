@@ -1,9 +1,15 @@
 {
   "name": "pi-handoff",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "纯手动 /handoff 项目交接：插件缓存保存与接续，压缩完成后仅显示灰色计数",
   "keywords": ["pi-package"],
   "license": "MIT",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node tests/simulate.test.js",
+    "test:artifact": "node tests/artifact.test.mjs"
+  },
   "pi": {
     "extensions": ["./extensions/handoff.ts"],
     "skills": ["./skills/handoff"]
