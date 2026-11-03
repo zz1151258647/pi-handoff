@@ -23,8 +23,9 @@ const NM = findPiNodeModules();
 const piEntry = fs.existsSync(path.join(NM, "@earendil-works", "pi-coding-agent", "dist", "index.js"))
 	? path.join(NM, "@earendil-works", "pi-coding-agent", "dist", "index.js")
 	: path.join(NM, "..", "dist", "index.js");
-const extPath = path.resolve(process.argv[2] || path.join(__dirname, "..", "extensions", "handoff.ts"));
-const skillPath = path.join(path.dirname(extPath), "..", "skills", "handoff", "SKILL.md");
+const extPath = path.resolve(process.argv[2] || path.join(__dirname, "..", "index.ts"));
+const packageRoot = path.basename(extPath) === "index.ts" ? path.dirname(extPath) : path.resolve(path.dirname(extPath), "..");
+const skillPath = path.join(packageRoot, "skills", "handoff", "SKILL.md");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "ph-manual-test-"));
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = path.join(temporary, "agent");
@@ -296,6 +297,41 @@ const { createJiti } = require(path.join(NM, "jiti"));
 		assert.deepEqual(loaded.errors, []);
 		assert.equal(loaded.extensions.length, 1);
 		const extension = loaded.extensions[0];
+		const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+		assert.deepEqual(manifest.pi.skills, ["./skills/handoff"]);
+		const skills = host.loadSkills({
+			cwd: project, agentDir: process.env.PI_CODING_AGENT_DIR, includeDefaults: false,
+			skillPaths: manifest.pi.skills.map(entry => path.resolve(packageRoot, entry)),
+		});
+		assert.deepEqual(skills.diagnostics, []);
+		assert.deepEqual(skills.skills.map(skill => [skill.name, skill.filePath, skill.disableModelInvocation]), [["handoff", skillPath, true]]);
+		if (path.basename(extPath) === "index.ts") {
+			console.log("   标准 manifest 入口发现/加载、注册与原入口一致；真实 Pi Git 标签省略后缀");
+			assert.deepEqual(manifest.pi.extensions, ["./index.ts"]);
+			const discovered = await loader.discoverAndLoadExtensions([packageRoot], project, path.join(temporary, "empty-agent"));
+			assert.deepEqual(discovered.errors, []);
+			assert.deepEqual(discovered.extensions.map(ext => ext.path), [extPath], "只加载 manifest 标准入口，不能重复注册原文件");
+			const originalPath = path.join(packageRoot, "extensions", "handoff.ts");
+			const original = await loader.loadExtensions([originalPath], project);
+			assert.deepEqual(original.errors, []);
+			const registrations = ext => ({
+				commands: [...ext.commands.keys()], tools: [...ext.tools.keys()],
+				handlers: [...ext.handlers].map(([name, handlers]) => [name, handlers.length]),
+				renderers: [...ext.entryRenderers.keys()], markdownTransformer: typeof ext.markdownTransformer,
+			});
+			assert.deepEqual(registrations(extension), registrations(original.extensions[0]));
+			assert.deepEqual(registrations(discovered.extensions[0]), registrations(original.extensions[0]));
+			assert.deepEqual([...extension.commands.keys()], ["handoff"]);
+			assert.deepEqual([...extension.tools.keys()], ["handoff_save", "handoff_complete"]);
+			const { InteractiveMode } = await import(pathToFileURL(path.join(path.dirname(piEntry), "modes", "interactive", "interactive-mode.js")).href);
+			// 不启动终端/会话、不改宿主；直接调用真实原型及其标签辅助方法。
+			const mode = Object.create(InteractiveMode.prototype);
+			const sourceInfo = { source: "git:github.com/zz1151258647/pi-handoff", scope: "user", origin: "package", baseDir: packageRoot };
+			const labels = InteractiveMode.prototype.getCompactExtensionLabels.call(mode, discovered.extensions.map(ext => ({ ...ext, sourceInfo })));
+			assert.deepEqual(labels, ["zz1151258647/pi-handoff"]);
+			assert.ok(labels.every(label => !label.includes(":handoff.ts")));
+			assert.deepEqual(InteractiveMode.prototype.getCompactExtensionLabels.call(mode, [{ path: originalPath, sourceInfo }]), ["zz1151258647/pi-handoff:handoff.ts"], "原入口作为负对照仍带后缀");
+		}
 		assert.ok(extension.commands.has("handoff"));
 		assert.ok(extension.tools.has("handoff_save"));
 		assert.ok(extension.tools.has("handoff_complete"));

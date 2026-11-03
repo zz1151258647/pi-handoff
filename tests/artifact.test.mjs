@@ -31,7 +31,7 @@ function snapshot() {
 	for (const name of ["extensions", "skills", "scripts", "tests"]) {
 		for (const file of files(join(root, name), name)) result[file] = hash(readFileSync(join(root, file)));
 	}
-	for (const name of ["package.json", "README.md", "LICENSE", ".gitignore"]) result[name] = hash(readFileSync(join(root, name)));
+	for (const name of ["index.ts", "package.json", "README.md", "LICENSE", ".gitignore"]) result[name] = hash(readFileSync(join(root, name)));
 	// 只检查存在性，不读取用户可能保留的 lock 或 node_modules。
 	result.lockExists = existsSync(join(root, "package-lock.json"));
 	result.nodeModulesExists = existsSync(join(root, "node_modules"));
@@ -96,7 +96,7 @@ try {
 	console.log(build.stdout.trim());
 	const sourceManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 	assert.equal(sourceManifest.version, "2.0.1");
-	assert.deepEqual(sourceManifest.pi.extensions, ["./extensions/handoff.ts"]);
+	assert.deepEqual(sourceManifest.pi.extensions, ["./index.ts"]);
 	const filename = `pi-handoff-${sourceManifest.version}.tgz`;
 	assert.deepEqual(readdirSync(out).sort(), ["SHA256SUMS.txt", filename].sort());
 	const archive = readFileSync(join(out, filename));
@@ -140,7 +140,7 @@ try {
 	}
 
 	console.log("D. 源码15组回归；产物JS15组回归（含真实Pi loader/编辑器/上下文）");
-	for (const entry of [join(root, "extensions/handoff.ts"), join(extracted, "extensions/handoff.js")]) {
+	for (const entry of [join(root, "index.ts"), join(extracted, "extensions/handoff.js")]) {
 		const simulation = run(join(root, "tests/simulate.test.js"), [entry], { discoverHost: true });
 		console.log(`${entry.endsWith(".ts") ? "源码" : "产物"}：${simulation.stdout.trim()}`);
 	}

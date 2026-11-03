@@ -98,7 +98,7 @@ pi -e "$HOME/.pi/agent/local-packages/pi-handoff/2.0.1"
 
 ### 源码安装与开发
 
-源码仓库的 manifest 仍指向 `extensions/handoff.ts`；Git 安装/本地开发由 Pi 加载 TS，与 Release 中仅含 JS 的运行包不同。
+源码仓库的 manifest 指向根目录 `index.ts`，仅转发原扩展 `extensions/handoff.ts`；包含此入口整理的 Git 来源在 Pi 启动的 Extensions 中显示 `zz1151258647/pi-handoff`，不再附带 `:handoff.ts`。Git 安装/本地开发由 Pi 加载 TS；Release 运行包入口仍为 `extensions/handoff.js`，行为和 Skill 不变。
 
 ```bash
 pi install git:github.com/zz1151258647/pi-handoff@v2.0.1
@@ -106,7 +106,9 @@ pi install git:github.com/zz1151258647/pi-handoff@v2.0.1
 pi -e .
 ```
 
-从旧名称升级时改用 pi-handoff 来源，不要保留新旧来源同时安装。安装或修改后执行 `/reload` 或重启 Pi。手动复制源码时，必须同时复制 `extensions/handoff.ts` 与完整的 `skills/handoff/`。
+已有 `v2.0.1` tag 不随源码更新；上述固定 tag 安装仍使用原入口，新显示需使用包含此改动的 Git 提交。
+
+从旧名称升级时改用 pi-handoff 来源，不要保留新旧来源同时安装。安装或修改后执行 `/reload` 或重启 Pi。手动复制当前源码包时，必须同时保留根目录 `index.ts`、`package.json`、`extensions/handoff.ts` 与完整的 `skills/handoff/`。
 
 本版维护与验收记录：[v2.0.1 版本入口](https://github.com/zz1151258647/pi-handoff/tree/v2.0.1/docs/handoff/versions/v2.0.1)。
 

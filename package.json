@@ -11,7 +11,7 @@
     "test:artifact": "node tests/artifact.test.mjs"
   },
   "pi": {
-    "extensions": ["./extensions/handoff.ts"],
+    "extensions": ["./index.ts"],
     "skills": ["./skills/handoff"]
   },
   "peerDependencies": {
